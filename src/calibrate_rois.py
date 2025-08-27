@@ -4,21 +4,21 @@ from .utils import open_capture
 from .config import save_rois
 
 def main():
-    parser = argparse.ArgumentParser(description="Calibrar vagas em VÍDEO (desenha retângulos 1 a 1).")
-    parser.add_argument("--source", required=True, help="0 (webcam) ou URL (RTSP/MJPEG/HTTP)")
+    parser = argparse.ArgumentParser(description="Calibrate parking spots on LIVE VIDEO (draw rectangles one by one).")
+    parser.add_argument("--source", required=True, help="0 (webcam) or URL (RTSP/MJPEG/HTTP)")
     args = parser.parse_args()
 
     cap = open_capture(args.source)
     ok, frame = cap.read()
     if not ok:
-        raise RuntimeError("Não foi possível ler a fonte de vídeo.")
+        raise RuntimeError("Could not read from the video source.")
 
     rois = []          # [{id,name,x,y,w,h}, ...]
-    drawing = [False]  # usar lista p/ mutabilidade dentro do callback
+    drawing = [False]  # use list for mutability inside callback
     start = [(0, 0)]
     current = [None]
 
-    win = "Calibração (ENTER=guardar | U=undo | C=limpar | Q=sair)"
+    win = "Calibration (ENTER=save | U=undo | C=clear | Q=quit)"
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
 
     def on_mouse(event, x, y, flags, param):
@@ -36,9 +36,9 @@ def main():
             drawing[0] = False
             if current[0]:
                 x_, y_, w_, h_ = current[0]
-                if w_ > 5 and h_ > 5:  # ignora cliques mínimos
+                if w_ > 5 and h_ > 5:  # ignore very small clicks
                     rid = len(rois) + 1
-                    rois.append({"id": rid, "name": f"Vaga {rid}", "x": int(x_), "y": int(y_), "w": int(w_), "h": int(h_)})
+                    rois.append({"id": rid, "name": f"Spot {rid}", "x": int(x_), "y": int(y_), "w": int(w_), "h": int(h_)})
             current[0] = None
 
     cv2.setMouseCallback(win, on_mouse)
@@ -50,20 +50,20 @@ def main():
 
         view = frame.copy()
 
-        # desenha ROIs já confirmadas
+        # draw confirmed ROIs
         for r in rois:
             x, y, w, h = r["x"], r["y"], r["w"], r["h"]
             cv2.rectangle(view, (x, y), (x + w, y + h), (0, 255, 0), 2)
             cv2.putText(view, r["name"], (x, y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2, cv2.LINE_AA)
             cv2.putText(view, r["name"], (x, y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1, cv2.LINE_AA)
 
-        # retângulo em desenho (mouse)
+        # rectangle currently being drawn (mouse)
         if current[0]:
             x, y, w, h = current[0]
             cv2.rectangle(view, (x, y), (x + w, y + h), (0, 255, 255), 2)
 
-        # instruções rápidas
-        txt = f"Vagas: {len(rois)} | ENTER=guardar | U=undo | C=limpar | Q=sair"
+        # quick instructions
+        txt = f"Spots: {len(rois)} | ENTER=save | U=undo | C=clear | Q=quit"
         cv2.rectangle(view, (0, 0), (len(txt)*9+16, 32), (50, 50, 50), -1)
         cv2.putText(view, txt, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1, cv2.LINE_AA)
 
@@ -73,16 +73,16 @@ def main():
         if k in (13, 10):  # ENTER
             if rois:
                 save_rois(rois)
-                print(f"{len(rois)} ROIs guardadas em data/rois.json.")
+                print(f"{len(rois)} ROIs saved in data/rois.json.")
                 break
             else:
-                print("Nenhuma ROI para guardar.")
+                print("No ROIs to save.")
         elif k in (ord('u'), ord('U')):
             if rois: rois.pop()
         elif k in (ord('c'), ord('C')):
             rois.clear()
-        elif k in (ord('q'), ord('Q'), 27):  # Q ou ESC
-            print("Saída sem guardar.")
+        elif k in (ord('q'), ord('Q'), 27):  # Q or ESC
+            print("Exit without saving.")
             break
 
     cap.release()

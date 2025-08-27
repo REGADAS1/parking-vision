@@ -29,11 +29,13 @@ DEFAULT_PARAMS = {
 }
 
 def save_rois(rois: list):
+    """Save ROIs to a JSON file."""
     with open(ROIS_PATH, "w", encoding="utf-8") as f:
         json.dump(rois, f, ensure_ascii=False, indent=2)
 
 def load_rois():
+    """Load ROIs from a JSON file."""
     if not ROIS_PATH.exists():
-        raise FileNotFoundError(f"Ficheiro de ROIs não encontrado: {ROIS_PATH}")
+        raise FileNotFoundError(f"ROI file not found: {ROIS_PATH}")
     with open(ROIS_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
