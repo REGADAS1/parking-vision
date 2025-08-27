@@ -1,0 +1,194 @@
+import argparse
+from pathlib import Path
+import cv2
+import numpy as np
+
+from .config import load_rois, BASELINE_PATH, DATA_DIR, DEFAULT_PARAMS
+from .utils import open_capture, draw_labelled_box, save_screenshot, Debouncer, GREEN, RED, WHITE
+from .detectors.edge_based import edge_ratio as compute_edge_ratio
+
+# -------------------- PARÂMETROS DE ROBUSTEZ --------------------
+OCCUPY_FRAMES = 6      # frames seguidos para confirmar OCUPADA
+FREE_FRAMES   = 3      # frames seguidos para confirmar LIVRE
+MIN_AREA      = 0.04   # % mínima de área alterada p/ contar como ocupado
+CLEAR_THRESH  = 0.012  # se dif. < 1.2% durante FREE_FRAMES => reset baseline local
+
+# -------------------- AUXILIARES --------------------
+def fit_to_screen(image, max_w=1600, max_h=900):
+    h, w = image.shape[:2]
+    scale = min(max_w / w, max_h / h, 1.0)
+    if scale < 1.0:
+        image = cv2.resize(image, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_AREA)
+    return image
+
+def align_to_baseline(gray_frame, gray_baseline,
+                      warp_mode=cv2.MOTION_EUCLIDEAN,
+                      number_of_iterations=30, termination_eps=1e-3):
+    warp_matrix = np.eye(2, 3, dtype=np.float32)
+    try:
+        criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
+                    number_of_iterations, termination_eps)
+        _, warp_matrix = cv2.findTransformECC(
+            gray_baseline, gray_frame, warp_matrix, warp_mode, criteria, None, 5
+        )
+        aligned = cv2.warpAffine(
+            gray_frame, warp_matrix, (gray_frame.shape[1], gray_frame.shape[0]),
+            flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP, borderMode=cv2.BORDER_REPLICATE
+        )
+        return aligned
+    except cv2.error:
+        return gray_frame  # fallback
+
+def compute_edge_baselines(baseline_gray, rois, canny1, canny2):
+    baselines = []
+    for r in rois:
+        x, y, w, h = r["x"], r["y"], r["w"], r["h"]
+        crop = baseline_gray[y:y+h, x:x+w]
+        er = compute_edge_ratio(crop, canny1, canny2)
+        baselines.append(er)
+    return baselines
+
+# -------------------- PROGRAMA PRINCIPAL --------------------
+def main():
+    parser = argparse.ArgumentParser(description="Deteção de ocupação de vagas (tempo real).")
+    parser.add_argument("--source", required=True, help="0 (webcam) ou URL (RTSP/MJPEG/HTTP)")
+    parser.add_argument("--show_labels", type=int, default=1)
+    args = parser.parse_args()
+
+    rois = load_rois()
+    cap = open_capture(args.source)
+
+    ok, frame = cap.read()
+    if not ok:
+        raise RuntimeError("Não foi possível ler frame inicial do vídeo.")
+
+    if BASELINE_PATH.exists():
+        baseline_bgr = cv2.imread(str(BASELINE_PATH), cv2.IMREAD_COLOR)
+        if baseline_bgr is None:
+            print("Aviso: baseline.jpg inválido. Usar frame atual como baseline.")
+            baseline_bgr = frame.copy()
+    else:
+        print("Aviso: baseline.jpg não encontrado. Usar frame atual como baseline.")
+        baseline_bgr = frame.copy()
+
+    baseline_gray = cv2.cvtColor(baseline_bgr, cv2.COLOR_BGR2GRAY)
+
+    canny1 = DEFAULT_PARAMS["edge"]["canny1"]
+    canny2 = DEFAULT_PARAMS["edge"]["canny2"]
+    edge_margin = DEFAULT_PARAMS["edge"]["edge_margin"]
+    diff_ratio_threshold = 0.03  # menos sensível a sombras
+    show_labels = bool(args.show_labels)
+
+    edge_baselines = compute_edge_baselines(baseline_gray, rois, canny1, canny2)
+    debouncers = {r["id"]: Debouncer(initial_state=False, frames_to_confirm=1) for r in rois}
+    free_streak = {r["id"]: 0 for r in rois}
+    occ_streak  = {r["id"]: 0 for r in rois}
+
+    win_name = "Parking Vision - Tempo Real"
+    cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(win_name, 1280, 720)
+
+    print("A correr. Teclas: [q]=sair, [b]=atualizar baseline, [s]=screenshot")
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            print("Falha na leitura do vídeo. A terminar...")
+            break
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray_aligned = align_to_baseline(gray, baseline_gray)
+
+        free_flags = []
+        for idx, r in enumerate(rois):
+            rid, name = r["id"], r["name"]
+            x, y, w, h = r["x"], r["y"], r["w"], r["h"]
+
+            roi_gray = gray_aligned[y:y+h, x:x+w]
+            roi_bgr  = frame[y:y+h, x:x+w]
+            base_bgr = baseline_bgr[y:y+h, x:x+w]
+
+            # Anti-sombra (HSV)
+            roi_hsv, base_hsv = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV), cv2.cvtColor(base_bgr, cv2.COLOR_BGR2HSV)
+            roi_v, base_v = cv2.equalizeHist(roi_hsv[:,:,2]), cv2.equalizeHist(base_hsv[:,:,2])
+            dh = cv2.absdiff(roi_hsv[:,:,0], base_hsv[:,:,0])
+            ds = cv2.absdiff(roi_hsv[:,:,1], base_hsv[:,:,1])
+            dv = cv2.absdiff(roi_v, base_v)
+            mix = cv2.addWeighted(dh, 0.45, ds, 0.45, 0)
+            mix = cv2.addWeighted(mix, 1.0, dv, 0.10, 0)
+            _, th = cv2.threshold(mix, 20, 255, cv2.THRESH_BINARY)
+            th = cv2.medianBlur(th, 3)
+            diff_ratio = cv2.countNonZero(th) / max(1, th.size)
+
+            # Bordas
+            er = compute_edge_ratio(roi_gray, canny1, canny2)
+
+            # Decisão com área mínima
+            occupied_diff = (diff_ratio > diff_ratio_threshold) and (diff_ratio > MIN_AREA)
+            occupied_edge = er > (edge_baselines[idx] + edge_margin)
+            occupied_now = bool(occupied_diff or occupied_edge)
+
+            # Histerese assimétrica
+            if occupied_now:
+                occ_streak[rid] += 1
+                free_streak[rid] = 0
+            else:
+                free_streak[rid] += 1
+                occ_streak[rid] = 0
+
+            if occ_streak[rid] >= OCCUPY_FRAMES:
+                state = True
+            elif free_streak[rid] >= FREE_FRAMES and diff_ratio < CLEAR_THRESH:
+                state = False
+            else:
+                state = debouncers[rid].state
+
+            debouncers[rid].state = state
+            color = RED if state else GREEN
+            free_flags.append(not state)
+
+            # Reset local do baseline quando fica livre de forma estável
+            if not state and free_streak[rid] == FREE_FRAMES and diff_ratio < CLEAR_THRESH:
+                baseline_gray[y:y+h, x:x+w] = gray_aligned[y:y+h, x:x+w]
+                baseline_bgr[y:y+h, x:x+w]  = frame[y:y+h, x:x+w]
+                edge_baselines[idx] = compute_edge_ratio(baseline_gray[y:y+h, x:x+w], canny1, canny2)
+
+            # Desenho
+            label = None
+            if show_labels:
+                status = "OCUPADA" if state else "LIVRE"
+                label = f"{name}: {status}"
+            draw_labelled_box(frame, x, y, w, h, color, label=label,
+                              font_scale=DEFAULT_PARAMS["display"]["font_scale"],
+                              thickness=DEFAULT_PARAMS["display"]["thickness"])
+
+        # Cabeçalho
+        free_count = sum(free_flags)
+        header = f"Vagas livres: {free_count}/{len(rois)}"
+        cv2.putText(frame, header, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.9, WHITE, 2, cv2.LINE_AA)
+
+        # Mostrar (fit-to-screen)
+        view = fit_to_screen(frame, max_w=1600, max_h=900)
+        cv2.imshow(win_name, view)
+
+        # Sair ao fechar no X
+        if cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1:
+            break
+
+        # Teclas
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            break
+        elif key == ord('b'):
+            baseline_gray = gray.copy()
+            baseline_bgr = frame.copy()
+            edge_baselines = compute_edge_baselines(baseline_gray, rois, canny1, canny2)
+            print("Baseline atualizado a partir do frame atual.")
+        elif key == ord('s'):
+            path = save_screenshot(frame, Path("data"))
+            print(f"Screenshot guardado em: {path}")
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()
