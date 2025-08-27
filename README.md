@@ -18,7 +18,7 @@ The system allows you to:
 
 - Exit gracefully when pressing q or closing the video window.
 
-- This tool can serve as a proof-of-concept for smart parking systems and be expanded into enterprise solutions with cloud integration, license plate recognition, or IoT hardware.
+This tool can serve as a proof-of-concept for smart parking systems and be expanded into enterprise solutions with cloud integration, license plate recognition, or IoT hardware.
 
 ---
 
