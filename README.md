@@ -4,19 +4,19 @@ This project is a real-time parking occupancy detection system built in Python u
 
 The system allows you to:
 
-Define multiple parking spots manually (rectangles drawn on live video).
+- Define multiple parking spots manually (rectangles drawn on live video).
 
-Capture a baseline image of empty spots for accurate comparison.
+- Capture a baseline image of empty spots for accurate comparison.
 
-Detect vehicles using a combination of edge analysis and shadow-robust background subtraction.
+- Detect vehicles using a combination of edge analysis and shadow-robust background subtraction.
 
-Display each parking spot with green (free) or red (occupied) bounding boxes.
+- Display each parking spot with green (free) or red (occupied) bounding boxes.
 
-Handle real-world conditions like shadows, brightness changes, and small camera movements.
+- Handle real-world conditions like shadows, brightness changes, and small camera movements.
 
-Update the baseline dynamically when spots remain free for a while.
+- Update the baseline dynamically when spots remain free for a while.
 
-Exit gracefully when pressing q or closing the video window.
+- Exit gracefully when pressing q or closing the video window.
 
 This tool can serve as a proof-of-concept for smart parking systems and be expanded into enterprise solutions with cloud integration, license plate recognition, or IoT hardware.
 
